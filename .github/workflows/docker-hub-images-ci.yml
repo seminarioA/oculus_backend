@@ -1,0 +1,48 @@
+name: Docker Hub Images CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-push:
+    environment: DevOps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure image name
+        run: |
+          echo "REPO_ROOT_IMAGE=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/oculus" >> $GITHUB_ENV
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Dockerfile (amd64)
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE="${REPO_ROOT_IMAGE}"
+
+          echo "Publicando imagen: ${IMAGE}"
+          echo "Tags: latest y ${SHORT_SHA}"
+
+          docker build -t "${IMAGE}:latest" -t "${IMAGE}:${SHORT_SHA}" .
+          docker push "${IMAGE}:latest"
+          docker push "${IMAGE}:${SHORT_SHA}"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "Imagen publicada: ${REPO_ROOT_IMAGE}:<tag>"
+          echo "Usa :latest para despliegues flotantes o el tag de commit para fijar versión."
