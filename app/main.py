@@ -1,78 +1,108 @@
-from fastapi import FastAPI, File, UploadFile
-from pydantic import BaseModel
-from typing import List
-import uuid
+import asyncio
 import random
-import time
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
 
-app = FastAPI(
-    title="Oculus: Back-End",
-    description="Backend faker para clasificación de monedas peruanas con una sola imagen.",
-    version="0.1.0"
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-COIN_CLASSES = [
-    "10_centimos",
-    "20_centimos",
-    "50_centimos",
-    "1_sol",
-    "2_soles",
-    "5_soles",
-]
+# --- STORES ---
+video_out_clients = set()
+tts_clients = set()
+# Almacenará el último frame recibido como BYTES (binario)
+latest_video_frame: Optional[bytes] = None
 
-class ClassificationResponse(BaseModel):
-    id: str
-    class_name: str
-    confidence: float
-    inference_time_ms: float
-    metadata: dict
+# --- CONSTANTES FAKER ---
+MOCK_OBJECTS = ["Silla", "Mesa", "Computadora", "Persona", "Escalera", "Puerta"]
+# No necesitamos FAKE_IMAGE ya que el video es echo, pero lo dejamos por si acaso
+# FAKE_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg=="
 
+# --- TAREA DE FONDO (GENERADOR TTS) ---
+async def fake_stream_generator():
+    """Solo se encarga de simular el TTS (Sigue siendo texto)."""
+    counter = 0
+    while True:
+        # Lógica de TTS (Cada 3 segundos)
+        if counter % 30 == 0 and tts_clients:
+            obj = random.choice(MOCK_OBJECTS)
+            dist = round(random.uniform(1.0, 5.0), 1)
+            text_msg = f"{obj} a {dist} metros"
+            
+            for ws in list(tts_clients):
+                try:
+                    # TTS usa send_text()
+                    await ws.send_text(text_msg)
+                except:
+                    tts_clients.remove(ws)
 
-class ModelStatus(BaseModel):
-    loaded: bool
-    model_name: str
-    version: str
-    device: str
-    classes: List[str]
+        counter += 1
+        await asyncio.sleep(0.1) # 100ms
 
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(fake_stream_generator())
 
-# ============================================================
-# Endpoints
-# ============================================================
+# --------------------------------------------------------------------
+# ENDPOINTS
+# --------------------------------------------------------------------
 
-@app.get("/status", response_model=ModelStatus)
-def status():
+@app.websocket("/video/in")
+async def video_in(websocket: WebSocket):
     """
-    Información del modelo actual.
+    Recibe el stream del cliente como BYTES, lo guarda y lo reenvía (ECHO).
     """
-    return ModelStatus(
-        loaded=True,
-        model_name="mobilenet_v3_large",
-        version="mock-0.2",
-        device="cpu",
-        classes=COIN_CLASSES
-    )
+    await websocket.accept()
+    global latest_video_frame
+    
+    try:
+        while True:
+            # *** RECIBIR BINARIO ***
+            frame_data_bytes = await websocket.receive_bytes()
+            
+            # 1. ACTUALIZAR BUFFER
+            latest_video_frame = frame_data_bytes
+            processed_frame = latest_video_frame 
 
+            # 2. BROADCAST a todos los clientes de /video/out
+            if video_out_clients and processed_frame is not None:
+                to_remove = []
+                for ws in list(video_out_clients):
+                    try:
+                        # *** ENVIAR BINARIO ***
+                        await ws.send_bytes(processed_frame)
+                    except:
+                        to_remove.append(ws)
+                for ws in to_remove:
+                    video_out_clients.remove(ws)
+                    
+    except WebSocketDisconnect:
+        pass
 
-@app.post("/classify", response_model=ClassificationResponse)
-async def classify(image: UploadFile = File(...)):
-    """
-    Clasifica una sola imagen. (Faker)
-    """
-    # Simulación de latencia de inferencia
-    inference_time = round(random.uniform(30.0, 65.0), 2)
+@app.websocket("/video/out")
+async def video_out(websocket: WebSocket):
+    """El cliente escucha aquí para ver el video 'procesado' (binario)."""
+    await websocket.accept()
+    video_out_clients.add(websocket)
+    try:
+        while True:
+            await asyncio.sleep(1) # Keep alive
+    except WebSocketDisconnect:
+        video_out_clients.remove(websocket)
 
-    fake_class = random.choice(COIN_CLASSES)
-    fake_conf = round(random.uniform(0.82, 0.99), 2)
-
-    return ClassificationResponse(
-        id=str(uuid.uuid4()),
-        class_name=fake_class,
-        confidence=fake_conf,
-        inference_time_ms=inference_time,
-        metadata={
-            "description": f"Mocked metadata for {fake_class}",
-            "side": random.choice(["obverse", "reverse"]),
-            "file_received": image.filename
-        }
-    )
+@app.websocket("/tts")
+async def tts_socket(websocket: WebSocket):
+    """El cliente escucha aquí para recibir instrucciones de voz (texto)."""
+    await websocket.accept()
+    tts_clients.add(websocket)
+    try:
+        while True:
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        tts_clients.remove(websocket)
