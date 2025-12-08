@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Webcam Stream Binario & TTS (Auto Audio)</title>
+    <style>
+        body { font-family: sans-serif; background: #222; color: #eee; text-align: center; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; padding: 20px; }
+        .card { background: #333; padding: 20px; border-radius: 8px; border: 1px solid #444; }
+        h2 { margin-top: 0; color: #4ade80; }
+        .log { height: 150px; overflow-y: auto; background: #000; font-family: monospace; padding: 10px; text-align: left; font-size: 12px; }
+        
+        /* Contenedores de Video */
+        #video-container { display: flex; flex-direction: column; align-items: center; }
+        #camera-feed, #img-out { width: 100%; max-width: 320px; height: auto; border: 2px solid #4ade80; }
+        
+        /* Ocultar el Canvas que solo se usa para procesar */
+        #capture-canvas { display: none; }
+        
+        /* Ocultamos el botón ya que se activa automáticamente */
+        #btn-audio { display: none; }
+    </style>
+</head>
+<body>
+
+    <h1>Streaming de Cámara Real (Binario) & TTS</h1>
+    <button id="btn-audio" style="background-color: #22c55e;">🔊 Audio Siempre Activo</button> 
+
+    <div class="grid">
+        <div class="card" id="video-container">
+            <h2>📤 Video In (Tu Cámara)</h2>
+            <video id="camera-feed" autoplay muted playsinline></video>
+            <canvas id="capture-canvas"></canvas>
+            <p>Estado de Envío: <span id="send-status" style="color: cyan;">Esperando cámara...</span></p>
+        </div>
+
+        <div class="card" id="video-container">
+            <h2>📥 Video Out</h2>
+            <img id="img-out" src="" alt="Esperando stream del servidor..." />
+            <p>Recibiendo stream procesado...</p>
+        </div>
+
+        <div class="card">
+            <h2>🗣️ TTS (Audio)</h2>
+            <div id="log-tts" class="log" style="color: yellow;"></div>
+        </div>
+    </div>
+
+    <script>
+        const BASE_URL = "ws://127.0.0.1:8000";
+        // --- CAMBIO CLAVE: Activamos el estado TTS por defecto ---
+        let audioActivo = true;
+        let streamInterval = null;
+
+        const videoElement = document.getElementById('camera-feed');
+        const canvas = document.getElementById('capture-canvas');
+        const context = canvas.getContext('2d');
+        const sendStatus = document.getElementById('send-status');
+
+        // Función auxiliar (ya no es activada por el usuario)
+        function activarAudio() {
+            // Esta función ahora solo existe para fines de demostración, pero el estado ya es 'true'.
+            console.log("TTS activado por defecto.");
+        }
+
+        // --- FUNCIÓN PRINCIPAL DE ENVÍO DE VIDEO BINARIO ---
+        function sendBinaryFrame() {
+            if (wsIn.readyState === WebSocket.OPEN) {
+                canvas.width = videoElement.videoWidth;
+                canvas.height = videoElement.videoHeight;
+                context.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+                
+                canvas.toBlob(function(blob) {
+                    if (wsIn.readyState === WebSocket.OPEN) {
+                        wsIn.send(blob); 
+                        sendStatus.innerText = `Enviando ${blob.size} bytes (Binario)...`;
+                    }
+                }, 'image/jpeg', 0.6); 
+            }
+        }
+        
+        // --- 1. INICIALIZAR Y ENVIAR CÁMARA (VIDEO IN) ---
+        const wsIn = new WebSocket(`${BASE_URL}/video/in`);
+        
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => {
+                videoElement.srcObject = stream;
+                
+                videoElement.onloadedmetadata = () => {
+                    videoElement.play();
+                    streamInterval = setInterval(sendBinaryFrame, 100); 
+                    sendStatus.innerText = "Cámara conectada, enviando frames binarios.";
+                };
+            })
+            .catch(err => {
+                sendStatus.innerText = `Error al acceder a la cámara: ${err.name}`;
+                console.error("Error al acceder a la cámara:", err);
+            });
+
+        wsIn.onclose = () => {
+            clearInterval(streamInterval);
+            sendStatus.innerText = "¡Envío desconectado!";
+        };
+        
+        // --- 2. VIDEO OUT (Recibimos frames procesados Binarios) ---
+        const wsOut = new WebSocket(`${BASE_URL}/video/out`);
+        const imgOut = document.getElementById("img-out");
+        
+        wsOut.binaryType = 'blob'; 
+        
+        wsOut.onmessage = (event) => {
+            const blob = event.data;
+            if (imgOut.src && imgOut.src.startsWith('blob:')) {
+                URL.revokeObjectURL(imgOut.src);
+            }
+            imgOut.src = URL.createObjectURL(blob);
+        };
+
+        // --- 3. TTS (Recibimos texto y hablamos) ---
+        const wsTTS = new WebSocket(`${BASE_URL}/tts`);
+        const logTTS = document.getElementById("log-tts");
+
+        wsTTS.onmessage = (event) => {
+            const texto = event.data;
+            logTTS.innerHTML = `🔊 "${texto}"<br>` + logTTS.innerHTML;
+
+            if (audioActivo) { // audioActivo es TRUE por defecto
+                window.speechSynthesis.cancel();
+                const utterance = new SpeechSynthesisUtterance(texto);
+                utterance.lang = "es-ES";
+                window.speechSynthesis.speak(utterance);
+            }
+        };
+
+        setTimeout(() => {
+            window.speechSynthesis.speak(new SpeechSynthesisUtterance("Sistema activado."));
+        }, 1000);
+    </script>
+</body>
+</html>
