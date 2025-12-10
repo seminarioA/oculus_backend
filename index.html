@@ -9,22 +9,15 @@
         .card { background: #333; padding: 20px; border-radius: 8px; border: 1px solid #444; }
         h2 { margin-top: 0; color: #4ade80; }
         .log { height: 150px; overflow-y: auto; background: #000; font-family: monospace; padding: 10px; text-align: left; font-size: 12px; }
-        
-        /* Contenedores de Video */
         #video-container { display: flex; flex-direction: column; align-items: center; }
         #camera-feed, #img-out { width: 100%; max-width: 320px; height: auto; border: 2px solid #4ade80; }
-        
-        /* Ocultar el Canvas que solo se usa para procesar */
         #capture-canvas { display: none; }
-        
-        /* Ocultamos el botón ya que se activa automáticamente */
         #btn-audio { display: none; }
     </style>
 </head>
 <body>
 
     <h1>Streaming de Cámara Real (Binario) & TTS</h1>
-    <button id="btn-audio" style="background-color: #22c55e;">🔊 Audio Siempre Activo</button> 
 
     <div class="grid">
         <div class="card" id="video-container">
@@ -47,8 +40,7 @@
     </div>
 
     <script>
-        const BASE_URL = "ws://127.0.0.1:8000";
-        // --- CAMBIO CLAVE: Activamos el estado TTS por defecto ---
+        const BASE_URL = "ws://3.135.187.120";
         let audioActivo = true;
         let streamInterval = null;
 
@@ -56,12 +48,6 @@
         const canvas = document.getElementById('capture-canvas');
         const context = canvas.getContext('2d');
         const sendStatus = document.getElementById('send-status');
-
-        // Función auxiliar (ya no es activada por el usuario)
-        function activarAudio() {
-            // Esta función ahora solo existe para fines de demostración, pero el estado ya es 'true'.
-            console.log("TTS activado por defecto.");
-        }
 
         // --- FUNCIÓN PRINCIPAL DE ENVÍO DE VIDEO BINARIO ---
         function sendBinaryFrame() {
@@ -72,14 +58,14 @@
                 
                 canvas.toBlob(function(blob) {
                     if (wsIn.readyState === WebSocket.OPEN) {
-                        wsIn.send(blob); 
-                        sendStatus.innerText = `Enviando ${blob.size} bytes (Binario)...`;
+                        wsIn.send(blob);
+                        sendStatus.innerText = `Enviando ${blob.size} bytes (1 FPS)...`;
                     }
-                }, 'image/jpeg', 0.6); 
+                }, 'image/jpeg', 0.6);
             }
         }
-        
-        // --- 1. INICIALIZAR Y ENVIAR CÁMARA (VIDEO IN) ---
+
+        // --- 1. VIDEO IN ---
         const wsIn = new WebSocket(`${BASE_URL}/video/in`);
         
         navigator.mediaDevices.getUserMedia({ video: true })
@@ -88,8 +74,9 @@
                 
                 videoElement.onloadedmetadata = () => {
                     videoElement.play();
-                    streamInterval = setInterval(sendBinaryFrame, 100); 
-                    sendStatus.innerText = "Cámara conectada, enviando frames binarios.";
+                    // ENVÍO A 1 FPS → 1000 ms
+                    streamInterval = setInterval(sendBinaryFrame, 1000);
+                    sendStatus.innerText = "Cámara conectada, enviando 1 frame por segundo.";
                 };
             })
             .catch(err => {
@@ -101,13 +88,13 @@
             clearInterval(streamInterval);
             sendStatus.innerText = "¡Envío desconectado!";
         };
-        
-        // --- 2. VIDEO OUT (Recibimos frames procesados Binarios) ---
+
+        // --- 2. VIDEO OUT ---
         const wsOut = new WebSocket(`${BASE_URL}/video/out`);
         const imgOut = document.getElementById("img-out");
-        
-        wsOut.binaryType = 'blob'; 
-        
+
+        wsOut.binaryType = 'blob';
+
         wsOut.onmessage = (event) => {
             const blob = event.data;
             if (imgOut.src && imgOut.src.startsWith('blob:')) {
@@ -116,7 +103,7 @@
             imgOut.src = URL.createObjectURL(blob);
         };
 
-        // --- 3. TTS (Recibimos texto y hablamos) ---
+        // --- 3. TTS ---
         const wsTTS = new WebSocket(`${BASE_URL}/tts`);
         const logTTS = document.getElementById("log-tts");
 
@@ -124,7 +111,7 @@
             const texto = event.data;
             logTTS.innerHTML = `🔊 "${texto}"<br>` + logTTS.innerHTML;
 
-            if (audioActivo) { // audioActivo es TRUE por defecto
+            if (audioActivo) {
                 window.speechSynthesis.cancel();
                 const utterance = new SpeechSynthesisUtterance(texto);
                 utterance.lang = "es-ES";
