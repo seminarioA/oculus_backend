@@ -1,11 +1,29 @@
-FROM python:3.11-slim
+FROM python:3.10-slim
 
-WORKDIR /code
+ENV DEBIAN_FRONTEND=noninteractive
 
-COPY ./requirements.txt /code/requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git wget curl ca-certificates \
+    libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev \
+    libheif1 libde265-0 libheif-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
+WORKDIR /app
 
-COPY ./app /code/app
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+        fastapi uvicorn[standard] \
+        opencv-python-headless \
+        matplotlib \
+        numpy<2 \
+        ultralytics==8.3.34 \
+        git+https://github.com/apple/ml-depth-pro.git
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "80"]
+RUN mkdir -p /app/checkpoints && \
+    wget -c https://ml-site.cdn-apple.com/models/depth-pro/depth_pro.pt -O /app/checkpoints/depth_pro.pt
+
+COPY server.py vision_processor.py /app/
+
+EXPOSE 8000
+
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
