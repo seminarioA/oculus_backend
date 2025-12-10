@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
     LOGGER.info("Starting up FastAPI server...")
     try:
         # Initialize thread pool executor
-        executor = ThreadPoolExecutor(max_workers=4)
+        executor = ThreadPoolExecutor(max_workers=8)
         LOGGER.info("Thread pool executor initialized")
 
         # Load VisionProcessor
@@ -133,88 +133,72 @@ def process_frame_sync(frame_bytes: bytes) -> Tuple[bytes, Optional[str]]:
 
 @app.websocket("/video/in")
 async def video_in(websocket: WebSocket):
+    """WebSocket endpoint for ingesting video frames.
+
+    Accepts binary JPEG frames, processes them, and broadcasts results.
+    """
     await websocket.accept()
     LOGGER.info("Client connected to /video/in")
 
-    # Buffer tamaño 1
-    latest_frame: Optional[bytes] = None
-    processing = False
-
-    async def process_loop():
-        nonlocal latest_frame, processing
-
-        # Limita a 5 FPS => cada 0.2 segundos
-        FRAME_INTERVAL = 0.2
-
-        while True:
-            await asyncio.sleep(FRAME_INTERVAL)
-
-            if latest_frame is None:
-                continue
-
-            if processing:
-                # Si aún no termina, se descarta y se espera al siguiente
-                continue
-
-            processing = True
-            frame = latest_frame  # Tomar snapshot actual
-            latest_frame = None   # Vaciar buffer (drop automático)
-
-            # Procesamiento en thread pool
-            try:
-                loop = asyncio.get_event_loop()
-                processed_frame_bytes, tts_alert = await loop.run_in_executor(
-                    executor, process_frame_sync, frame
-                )
-
-                # Enviar a /video/out
-                if processed_frame_bytes:
-                    disconnected = set()
-                    for client in video_out_clients:
-                        try:
-                            await client.send_bytes(processed_frame_bytes)
-                        except:
-                            disconnected.add(client)
-                    video_out_clients.difference_update(disconnected)
-
-                # Enviar a /tts
-                if tts_alert:
-                    disconnected = set()
-                    for client in tts_clients:
-                        try:
-                            await client.send_text(tts_alert)
-                        except:
-                            disconnected.add(client)
-                    tts_clients.difference_update(disconnected)
-
-            except Exception as e:
-                LOGGER.error(f"Error processing frame: {e}")
-            finally:
-                processing = False
-
-    # Lanzar tarea de procesamiento continuo
-    loop_task = asyncio.create_task(process_loop())
-
     try:
         while True:
-            frame_data = await websocket.receive_bytes()
+            # Receive binary frame data
+            try:
+                frame_data = await websocket.receive_bytes()
+            except RuntimeError as e:
+                LOGGER.error(f"Error receiving data: {e}")
+                break
 
             if not frame_data:
+                LOGGER.warning("Received empty frame data")
                 continue
 
-            # Este replace es el buffer tamaño 1:
-            latest_frame = frame_data
+            # Process frame in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            try:
+                processed_frame_bytes, tts_alert = await loop.run_in_executor(
+                    executor, process_frame_sync, frame_data
+                )
+            except Exception as e:
+                LOGGER.error(f"Error processing frame: {e}")
+                continue
+
+            # Broadcast processed frame to /video/out clients
+            if processed_frame_bytes:
+                disconnected_clients = set()
+                for client in video_out_clients:
+                    try:
+                        await client.send_bytes(processed_frame_bytes)
+                    except Exception as e:
+                        LOGGER.error(f"Error sending to video/out client: {e}")
+                        disconnected_clients.add(client)
+
+                # Remove disconnected clients
+                video_out_clients.difference_update(disconnected_clients)
+
+            # Broadcast TTS alert to /tts clients
+            if tts_alert:
+                disconnected_clients = set()
+                for client in tts_clients:
+                    try:
+                        await client.send_text(tts_alert)
+                    except Exception as e:
+                        LOGGER.error(f"Error sending to tts client: {e}")
+                        disconnected_clients.add(client)
+
+                # Remove disconnected clients
+                tts_clients.difference_update(disconnected_clients)
 
     except WebSocketDisconnect:
         LOGGER.info("Client disconnected from /video/in")
     except Exception as e:
         LOGGER.error(f"Error in /video/in handler: {e}")
     finally:
-        loop_task.cancel()
         try:
             await websocket.close()
-        except:
+        except Exception:
             pass
+
 
 @app.websocket("/video/out")
 async def video_out(websocket: WebSocket):
