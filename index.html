@@ -40,7 +40,7 @@
     </div>
 
     <script>
-        const BASE_URL = "ws://3.145.146.249";
+        const BASE_URL = "ws://localhost:8000";
         let audioActivo = true;
         let streamInterval = null;
 
@@ -52,14 +52,17 @@
         // --- FUNCIÓN PRINCIPAL DE ENVÍO DE VIDEO BINARIO ---
         function sendBinaryFrame() {
             if (wsIn.readyState === WebSocket.OPEN) {
-                canvas.width = videoElement.videoWidth;
-                canvas.height = videoElement.videoHeight;
-                context.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+
+                // Forzar resolución 480p
+                canvas.width = 640;
+                canvas.height = 480;
+
+                context.drawImage(videoElement, 0, 0, 640, 480);
                 
                 canvas.toBlob(function(blob) {
                     if (wsIn.readyState === WebSocket.OPEN) {
                         wsIn.send(blob);
-                        sendStatus.innerText = `Enviando ${blob.size} bytes (1 FPS)...`;
+                        sendStatus.innerText = `Enviando ${blob.size} bytes (1 FPS) @480p...`;
                     }
                 }, 'image/jpeg', 0.6);
             }
@@ -68,21 +71,26 @@
         // --- 1. VIDEO IN ---
         const wsIn = new WebSocket(`${BASE_URL}/video/in`);
         
-        navigator.mediaDevices.getUserMedia({ video: true })
-            .then(stream => {
-                videoElement.srcObject = stream;
+        navigator.mediaDevices.getUserMedia({
+            video: {
+                width: { ideal: 640 },
+                height: { ideal: 480 },
+                frameRate: { ideal: 30, max: 30 }
+            }
+        })
+        .then(stream => {
+            videoElement.srcObject = stream;
                 
-                videoElement.onloadedmetadata = () => {
-                    videoElement.play();
-                    // ENVÍO A 1 FPS → 1000 ms
-                    streamInterval = setInterval(sendBinaryFrame, 1000);
-                    sendStatus.innerText = "Cámara conectada, enviando 1 frame por segundo.";
-                };
-            })
-            .catch(err => {
-                sendStatus.innerText = `Error al acceder a la cámara: ${err.name}`;
-                console.error("Error al acceder a la cámara:", err);
-            });
+            videoElement.onloadedmetadata = () => {
+                videoElement.play();
+                streamInterval = setInterval(sendBinaryFrame, 1000);
+                sendStatus.innerText = "Cámara conectada, enviando a 480p.";
+            };
+        })
+        .catch(err => {
+            sendStatus.innerText = `Error al acceder a la cámara: ${err.name}`;
+            console.error("Error al acceder a la cámara:", err);
+        });
 
         wsIn.onclose = () => {
             clearInterval(streamInterval);
